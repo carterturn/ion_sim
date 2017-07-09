@@ -7,34 +7,26 @@
 #include <GLFW/glfw3.h>
 #include <GL/gl.h>
 
+#include "particle.h"
+#include "input_loader.h"
+
 using namespace std;
 
 #define BLOCK_SIZE 32
-#define PARTICLES_WIDTH 32
-#define PARTICLES_HEIGHT 32
 #define WIDTH 512
 #define HEIGHT 512
 #define WALL_ELASTICITY 1.0
-#define METERS_PER_SQUARE 1.0
+#define METERS_PER_SQUARE 0.01
 
-#define TOTAL_TIME 10.0
+#define TOTAL_TIME 50.0
 #define DT 0.001
 #define TICKS_PER_DISPLAY 50
-
-#define K 8.987E9
 
 #define EPSILON 0.000001;
 
 int blocks;
 
-struct particle{
-	double x;
-	double y;
-	double vx;
-	double vy;
-	double q;
-	double m;
-};
+__managed__ int number_particles;
 
 __device__ __host__ bool is_zero(double value){
 	return abs(value) < EPSILON;
@@ -47,7 +39,7 @@ __device__ __host__ double sign(double value){
 __global__ void move_particles(particle * particles){
 	int i = (blockIdx.x * BLOCK_SIZE) + threadIdx.x;
 
-	if(i > PARTICLES_HEIGHT * PARTICLES_WIDTH) return;
+	if(i > number_particles) return;
 	
 	particles[i].x += particles[i].vx * DT / METERS_PER_SQUARE;
 	if(particles[i].x > WIDTH){
@@ -68,7 +60,7 @@ __global__ void move_particles(particle * particles){
 		particles[i].vy = -particles[i].vy * WALL_ELASTICITY;
 	}
 
-	for(int j = 0; j < PARTICLES_WIDTH * PARTICLES_HEIGHT; j++){
+	for(int j = 0; j < number_particles; j++){
 		if(i != j){
 			double d_x = (particles[i].x - particles[j].x) * METERS_PER_SQUARE;
 			double d_y = (particles[i].y - particles[j].y) * METERS_PER_SQUARE;
@@ -98,6 +90,11 @@ __global__ void move_particles(particle * particles){
 
 int main(int argc, char* argv[]){
 
+	if(argc < 2){
+		cout << "Usage: ./a.out [particle config file]\n";
+		return -1;
+	}
+
 	glfwInit();
 	GLFWwindow * window = glfwCreateWindow((int) WIDTH, (int) HEIGHT, "Ion Simulator", NULL, NULL);
 
@@ -108,35 +105,31 @@ int main(int argc, char* argv[]){
 	glfwMakeContextCurrent(window);
 	glOrtho(0, WIDTH, 0, HEIGHT, -1.0, 1.0);
 
-	blocks = (PARTICLES_WIDTH * PARTICLES_HEIGHT) / BLOCK_SIZE;
-	if(PARTICLES_HEIGHT * PARTICLES_WIDTH % BLOCK_SIZE != 0){
+	vector<particle> cpu_particles = load_particles(argv[1]);
+	number_particles = cpu_particles.size();
+
+	cout << "A\n";
+
+	blocks = number_particles / BLOCK_SIZE;
+	if(number_particles % BLOCK_SIZE != 0){
 		blocks++;
 	}
 
-	int particles_size = PARTICLES_WIDTH * PARTICLES_HEIGHT * sizeof(particle);
-	particle * cpu_particles = new particle[PARTICLES_WIDTH * PARTICLES_HEIGHT];
-	for(int i = 0; i < PARTICLES_HEIGHT; i++){
-		for(int j = 0; j < PARTICLES_WIDTH; j++){
-			cpu_particles[i * PARTICLES_WIDTH + j].x = i * (WIDTH / (PARTICLES_WIDTH + 1))
-				+ (WIDTH / (PARTICLES_WIDTH + 1));
-			cpu_particles[i * PARTICLES_WIDTH + j].vx = 0.0;
-			cpu_particles[i * PARTICLES_WIDTH + j].y = j * (HEIGHT / (PARTICLES_HEIGHT + 1))
-				+ (HEIGHT / (PARTICLES_HEIGHT + 1));
-			cpu_particles[i * PARTICLES_WIDTH + j].vy = 0.0;
-			cpu_particles[i * PARTICLES_WIDTH + j].q = 1.602E-19;
-			cpu_particles[i * PARTICLES_WIDTH + j].m = 1.672E-27;
-		}
+	int particle_data_size = number_particles * sizeof(particle);
+
+	cout << "A\n";
+	
+	particle * gpu_particles = NULL;
+	cudaError_t error = cudaMalloc(&gpu_particles, particle_data_size);
+	if(error != cudaSuccess){
+		cout << cudaGetErrorString(error) << "\n";
+	}
+	error = cudaMemcpy(gpu_particles, &cpu_particles.front(), particle_data_size, cudaMemcpyHostToDevice);
+	if(error != cudaSuccess){
+		cout << cudaGetErrorString(error) << "\n";
 	}
 
-	particle * gpu_particles = NULL;
-	cudaError_t error = cudaMalloc(&gpu_particles, particles_size);
-	if(error != cudaSuccess){
-		cout << cudaGetErrorString(error) << "\n";
-	}
-	error = cudaMemcpy(gpu_particles, cpu_particles, particles_size, cudaMemcpyHostToDevice);
-	if(error != cudaSuccess){
-		cout << cudaGetErrorString(error) << "\n";
-	}
+	cout << "A\n";
 
 	int tick_count = 0;
 	for(double t = 0.0; t < TOTAL_TIME; t += DT){
@@ -144,7 +137,7 @@ int main(int argc, char* argv[]){
 		clock_gettime(CLOCK_REALTIME, &start);
 		move_particles<<<blocks, BLOCK_SIZE>>>(gpu_particles);
 
-		error = cudaMemcpy(cpu_particles, gpu_particles, particles_size, cudaMemcpyDeviceToHost);
+		error = cudaMemcpy(&cpu_particles.front(), gpu_particles, particle_data_size, cudaMemcpyDeviceToHost);
 		if(error != cudaSuccess){
 			cout << cudaGetErrorString(error) << "\n";
 		}
@@ -153,7 +146,7 @@ int main(int argc, char* argv[]){
 			glClear(GL_COLOR_BUFFER_BIT);
 			glBegin(GL_POINTS);
 			glColor3f(0.0f, 1.0f, 0.0f);
-			for(int i = 0; i < PARTICLES_WIDTH * PARTICLES_HEIGHT; i++){
+			for(int i = 0; i < number_particles; i++){
 				glVertex2i((int) cpu_particles[i].x, (int) cpu_particles[i].y);
 			}
 			glEnd();
@@ -166,7 +159,6 @@ int main(int argc, char* argv[]){
 	}
 
 	cudaFree(gpu_particles);
-	delete[] cpu_particles;
 		
 	return 0;
 }
