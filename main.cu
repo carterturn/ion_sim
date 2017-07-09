@@ -22,8 +22,6 @@ using namespace std;
 #define TICKS_PER_DISPLAY 50
 
 #define K 8.987E9
-#define Q 1.602E-19
-#define M 1.672E-27
 
 #define EPSILON 0.000001;
 
@@ -34,6 +32,8 @@ struct particle{
 	double y;
 	double vx;
 	double vy;
+	double q;
+	double m;
 };
 
 __device__ __host__ bool is_zero(double value){
@@ -72,7 +72,8 @@ __global__ void move_particles(particle * particles){
 		if(i != j){
 			double d_x = (particles[i].x - particles[j].x) * METERS_PER_SQUARE;
 			double d_y = (particles[i].y - particles[j].y) * METERS_PER_SQUARE;
-			double A = (K * Q * Q) / (M * (d_x*d_x + d_y*d_y));
+			double A = (K * particles[i].q * particles[j].q) /
+				(particles[i].m * (d_x*d_x + d_y*d_y));
 			double A_y;
 			double A_x;
 			if(is_zero(d_y)){
@@ -122,6 +123,8 @@ int main(int argc, char* argv[]){
 			cpu_particles[i * PARTICLES_WIDTH + j].y = j * (HEIGHT / (PARTICLES_HEIGHT + 1))
 				+ (HEIGHT / (PARTICLES_HEIGHT + 1));
 			cpu_particles[i * PARTICLES_WIDTH + j].vy = 0.0;
+			cpu_particles[i * PARTICLES_WIDTH + j].q = 1.602E-19;
+			cpu_particles[i * PARTICLES_WIDTH + j].m = 1.672E-27;
 		}
 	}
 
