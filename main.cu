@@ -1,0 +1,169 @@
+#include <iostream>
+#include <sys/time.h>
+#include <cmath>
+#include <cstring>
+#include <unistd.h>
+
+#include <GLFW/glfw3.h>
+#include <GL/gl.h>
+
+using namespace std;
+
+#define BLOCK_SIZE 32
+#define PARTICLES_WIDTH 32
+#define PARTICLES_HEIGHT 32
+#define WIDTH 512
+#define HEIGHT 512
+#define WALL_ELASTICITY 1.0
+#define METERS_PER_SQUARE 1.0
+
+#define TOTAL_TIME 10.0
+#define DT 0.001
+#define TICKS_PER_DISPLAY 50
+
+#define K 8.987E9
+#define Q 1.602E-19
+#define M 1.672E-27
+
+#define EPSILON 0.000001;
+
+int blocks;
+
+struct particle{
+	double x;
+	double y;
+	double vx;
+	double vy;
+};
+
+__device__ __host__ bool is_zero(double value){
+	return abs(value) < EPSILON;
+}
+
+__device__ __host__ double sign(double value){
+	return value >= 0 ? 1.0 : -1.0;
+}
+
+__global__ void move_particles(particle * particles){
+	int i = (blockIdx.x * BLOCK_SIZE) + threadIdx.x;
+
+	if(i > PARTICLES_HEIGHT * PARTICLES_WIDTH) return;
+	
+	particles[i].x += particles[i].vx * DT / METERS_PER_SQUARE;
+	if(particles[i].x > WIDTH){
+		particles[i].x = WIDTH;
+		particles[i].vx = -particles[i].vx * WALL_ELASTICITY;
+	}
+	if(particles[i].x < 0){
+		particles[i].x = 0;
+		particles[i].vx = -particles[i].vx * WALL_ELASTICITY;
+	}
+	particles[i].y += particles[i].vy * DT / METERS_PER_SQUARE;
+	if(particles[i].y > HEIGHT){
+		particles[i].y = HEIGHT;
+		particles[i].vy = -particles[i].vy * WALL_ELASTICITY;
+	}
+	if(particles[i].y < 0){
+		particles[i].y = 0;
+		particles[i].vy = -particles[i].vy * WALL_ELASTICITY;
+	}
+
+	for(int j = 0; j < PARTICLES_WIDTH * PARTICLES_HEIGHT; j++){
+		if(i != j){
+			double d_x = (particles[i].x - particles[j].x) * METERS_PER_SQUARE;
+			double d_y = (particles[i].y - particles[j].y) * METERS_PER_SQUARE;
+			double A = (K * Q * Q) / (M * (d_x*d_x + d_y*d_y));
+			double A_y;
+			double A_x;
+			if(is_zero(d_y)){
+				A_x = A * sign(d_x);
+				A_y = 0.0;
+			}
+			else if(is_zero(d_x)){
+				A_x = A * sign(d_y);
+				A_y = 0.0;
+			}
+			else{
+				double hyp = sqrt(d_x*d_x + d_y*d_y);
+				A_y = A * d_y / hyp;
+				A_x = A * d_x / hyp;
+			}
+			particles[i].vx += A_x * DT;
+			particles[i].vy += A_y * DT;
+		}
+	}
+
+}
+
+int main(int argc, char* argv[]){
+
+	glfwInit();
+	GLFWwindow * window = glfwCreateWindow((int) WIDTH, (int) HEIGHT, "Ion Simulator", NULL, NULL);
+
+	if(!window){
+		return -1;
+	}
+
+	glfwMakeContextCurrent(window);
+	glOrtho(0, WIDTH, 0, HEIGHT, -1.0, 1.0);
+
+	blocks = (PARTICLES_WIDTH * PARTICLES_HEIGHT) / BLOCK_SIZE;
+	if(PARTICLES_HEIGHT * PARTICLES_WIDTH % BLOCK_SIZE != 0){
+		blocks++;
+	}
+
+	int particles_size = PARTICLES_WIDTH * PARTICLES_HEIGHT * sizeof(particle);
+	particle * cpu_particles = new particle[PARTICLES_WIDTH * PARTICLES_HEIGHT];
+	for(int i = 0; i < PARTICLES_HEIGHT; i++){
+		for(int j = 0; j < PARTICLES_WIDTH; j++){
+			cpu_particles[i * PARTICLES_WIDTH + j].x = i * (WIDTH / (PARTICLES_WIDTH + 1))
+				+ (WIDTH / (PARTICLES_WIDTH + 1));
+			cpu_particles[i * PARTICLES_WIDTH + j].vx = 0.0;
+			cpu_particles[i * PARTICLES_WIDTH + j].y = j * (HEIGHT / (PARTICLES_HEIGHT + 1))
+				+ (HEIGHT / (PARTICLES_HEIGHT + 1));
+			cpu_particles[i * PARTICLES_WIDTH + j].vy = 0.0;
+		}
+	}
+
+	particle * gpu_particles = NULL;
+	cudaError_t error = cudaMalloc(&gpu_particles, particles_size);
+	if(error != cudaSuccess){
+		cout << cudaGetErrorString(error) << "\n";
+	}
+	error = cudaMemcpy(gpu_particles, cpu_particles, particles_size, cudaMemcpyHostToDevice);
+	if(error != cudaSuccess){
+		cout << cudaGetErrorString(error) << "\n";
+	}
+
+	int tick_count = 0;
+	for(double t = 0.0; t < TOTAL_TIME; t += DT){
+		timespec start;
+		clock_gettime(CLOCK_REALTIME, &start);
+		move_particles<<<blocks, BLOCK_SIZE>>>(gpu_particles);
+
+		error = cudaMemcpy(cpu_particles, gpu_particles, particles_size, cudaMemcpyDeviceToHost);
+		if(error != cudaSuccess){
+			cout << cudaGetErrorString(error) << "\n";
+		}
+
+		if(tick_count % TICKS_PER_DISPLAY == 0){
+			glClear(GL_COLOR_BUFFER_BIT);
+			glBegin(GL_POINTS);
+			glColor3f(0.0f, 1.0f, 0.0f);
+			for(int i = 0; i < PARTICLES_WIDTH * PARTICLES_HEIGHT; i++){
+				glVertex2i((int) cpu_particles[i].x, (int) cpu_particles[i].y);
+			}
+			glEnd();
+			glfwSwapBuffers(window);
+			timespec end;
+			clock_gettime(CLOCK_REALTIME, &end);
+			cout << t << "\n";
+		}
+		tick_count++;
+	}
+
+	cudaFree(gpu_particles);
+	delete[] cpu_particles;
+		
+	return 0;
+}
