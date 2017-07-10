@@ -26,10 +26,57 @@ __device__ __host__ double sign(double value){
 	return value >= 0 ? 1.0 : -1.0;
 }
 
-__global__ void move_particles(particle * particles, simulation_config * config){
+__global__ void calculate_accel_matrix(particle * particles, double * accels_x, double * accels_y,
+				       simulation_config * config){
+	int i = (blockIdx.x * BLOCK_SIZE) + threadIdx.x;
+	int j = (blockIdx.y * BLOCK_SIZE) + threadIdx.y;
+
+	if(i >= config->number_particles || j >= config->number_particles){
+		return;
+	}
+
+	if(i == j){
+		return;
+	}
+
+	double d_x = (particles[i].x - particles[j].x) * config->meters_per_square;
+	double d_y = (particles[i].y - particles[j].y) * config->meters_per_square;
+	double A = (K * particles[i].q * particles[j].q) /
+		(particles[i].m * (d_x*d_x + d_y*d_y));
+	double A_y;
+	double A_x;
+	if(is_zero(d_y)){
+		A_x = A * sign(d_x);
+		A_y = 0.0;
+	}
+	else if(is_zero(d_x)){
+		A_x = A * sign(d_y);
+		A_y = 0.0;
+	}
+	else{
+		double hyp = sqrt(d_x*d_x + d_y*d_y);
+		A_y = A * d_y / hyp;
+		A_x = A * d_x / hyp;
+	}
+
+	accels_x[i * config->number_particles + j] = A_x;
+	accels_y[i * config->number_particles + j] = A_y;
+}
+
+__global__ void move_particles(particle * particles, double * accels_x, double * accels_y,
+			       simulation_config * config){
 	int i = (blockIdx.x * BLOCK_SIZE) + threadIdx.x;
 
-	if(i > config->number_particles) return;
+	if(i > config->number_particles){
+		return;
+	}
+
+	for(int j = 0; j < config->number_particles; j++){
+		if(i != j){
+			particles[i].vx += accels_x[i * config->number_particles + j] * config->dt;
+			particles[i].vy += accels_y[i * config->number_particles + j] * config->dt;
+		}
+	}
 	
 	particles[i].x += particles[i].vx * config->dt / config->meters_per_square;
 	if(particles[i].x > config->width){
@@ -49,33 +96,6 @@ __global__ void move_particles(particle * particles, simulation_config * config)
 		particles[i].y = 0;
 		particles[i].vy = -particles[i].vy * config->wall_elasticity;
 	}
-
-	for(int j = 0; j < config->number_particles; j++){
-		if(i != j){
-			double d_x = (particles[i].x - particles[j].x) * config->meters_per_square;
-			double d_y = (particles[i].y - particles[j].y) * config->meters_per_square;
-			double A = (K * particles[i].q * particles[j].q) /
-				(particles[i].m * (d_x*d_x + d_y*d_y));
-			double A_y;
-			double A_x;
-			if(is_zero(d_y)){
-				A_x = A * sign(d_x);
-				A_y = 0.0;
-			}
-			else if(is_zero(d_x)){
-				A_x = A * sign(d_y);
-				A_y = 0.0;
-			}
-			else{
-				double hyp = sqrt(d_x*d_x + d_y*d_y);
-				A_y = A * d_y / hyp;
-				A_x = A * d_x / hyp;
-			}
-			particles[i].vx += A_x * config->dt;
-			particles[i].vy += A_y * config->dt;
-		}
-	}
-
 }
 
 int main(int argc, char* argv[]){
@@ -127,15 +147,30 @@ int main(int argc, char* argv[]){
 		cout << cudaGetErrorString(error) << "\n";
 	}
 
+	double * accels_x = NULL;
+	double * accels_y = NULL;
+	int force_matrix_size = config.number_particles * config.number_particles * sizeof(double);
+	error = cudaMalloc(&accels_x, force_matrix_size);
+	if(error != cudaSuccess){
+		cout << cudaGetErrorString(error) << "\n";
+	}
+	error = cudaMalloc(&accels_y, force_matrix_size);
+	if(error != cudaSuccess){
+		cout << cudaGetErrorString(error) << "\n";
+	}
+
 	int tick_count = 0;
 	for(double t = 0.0; t < config.total_time; t += config.dt){
-		move_particles<<<blocks, BLOCK_SIZE>>>(gpu_particles, gpu_config);
+		calculate_accel_matrix<<<dim3(blocks, blocks), dim3(BLOCK_SIZE, BLOCK_SIZE)>>>
+			(gpu_particles, accels_x, accels_y, gpu_config);
+		
+		move_particles<<<blocks, BLOCK_SIZE>>>(gpu_particles, accels_x, accels_y, gpu_config);
 
 		error = cudaMemcpy(&cpu_particles.front(), gpu_particles, particle_data_size, cudaMemcpyDeviceToHost);
 		if(error != cudaSuccess){
 			cout << cudaGetErrorString(error) << "\n";
 		}
-
+		
 		if(tick_count % config.ticks_per_display == 0){
 			glClear(GL_COLOR_BUFFER_BIT);
 			glBegin(GL_POINTS);
