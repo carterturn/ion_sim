@@ -13,14 +13,6 @@
 using namespace std;
 
 #define BLOCK_SIZE 32
-#define WIDTH 512
-#define HEIGHT 512
-#define WALL_ELASTICITY 1.0
-#define METERS_PER_SQUARE 0.01
-
-#define TOTAL_TIME 50.0
-#define DT 0.001
-#define TICKS_PER_DISPLAY 50
 
 #define EPSILON 0.000001;
 
@@ -36,34 +28,34 @@ __device__ __host__ double sign(double value){
 	return value >= 0 ? 1.0 : -1.0;
 }
 
-__global__ void move_particles(particle * particles){
+__global__ void move_particles(particle * particles, simulation_config * config){
 	int i = (blockIdx.x * BLOCK_SIZE) + threadIdx.x;
 
 	if(i > number_particles) return;
 	
-	particles[i].x += particles[i].vx * DT / METERS_PER_SQUARE;
-	if(particles[i].x > WIDTH){
-		particles[i].x = WIDTH;
-		particles[i].vx = -particles[i].vx * WALL_ELASTICITY;
+	particles[i].x += particles[i].vx * config->dt / config->meters_per_square;
+	if(particles[i].x > config->width){
+		particles[i].x = config->width;
+		particles[i].vx = -particles[i].vx * config->wall_elasticity;
 	}
 	if(particles[i].x < 0){
 		particles[i].x = 0;
-		particles[i].vx = -particles[i].vx * WALL_ELASTICITY;
+		particles[i].vx = -particles[i].vx * config->wall_elasticity;
 	}
-	particles[i].y += particles[i].vy * DT / METERS_PER_SQUARE;
-	if(particles[i].y > HEIGHT){
-		particles[i].y = HEIGHT;
-		particles[i].vy = -particles[i].vy * WALL_ELASTICITY;
+	particles[i].y += particles[i].vy * config->dt / config->meters_per_square;
+	if(particles[i].y > config->height){
+		particles[i].y = config->height;
+		particles[i].vy = -particles[i].vy * config->wall_elasticity;
 	}
 	if(particles[i].y < 0){
 		particles[i].y = 0;
-		particles[i].vy = -particles[i].vy * WALL_ELASTICITY;
+		particles[i].vy = -particles[i].vy * config->wall_elasticity;
 	}
 
 	for(int j = 0; j < number_particles; j++){
 		if(i != j){
-			double d_x = (particles[i].x - particles[j].x) * METERS_PER_SQUARE;
-			double d_y = (particles[i].y - particles[j].y) * METERS_PER_SQUARE;
+			double d_x = (particles[i].x - particles[j].x) * config->meters_per_square;
+			double d_y = (particles[i].y - particles[j].y) * config->meters_per_square;
 			double A = (K * particles[i].q * particles[j].q) /
 				(particles[i].m * (d_x*d_x + d_y*d_y));
 			double A_y;
@@ -81,8 +73,8 @@ __global__ void move_particles(particle * particles){
 				A_y = A * d_y / hyp;
 				A_x = A * d_x / hyp;
 			}
-			particles[i].vx += A_x * DT;
-			particles[i].vy += A_y * DT;
+			particles[i].vx += A_x * config->dt;
+			particles[i].vy += A_y * config->dt;
 		}
 	}
 
@@ -91,24 +83,24 @@ __global__ void move_particles(particle * particles){
 int main(int argc, char* argv[]){
 
 	if(argc < 2){
-		cout << "Usage: ./a.out [particle config file]\n";
+		cout << "Usage: ./a.out [config file]\n";
 		return -1;
 	}
 
+	simulation_config config = load_config(argv[1]);
+
 	glfwInit();
-	GLFWwindow * window = glfwCreateWindow((int) WIDTH, (int) HEIGHT, "Ion Simulator", NULL, NULL);
+	GLFWwindow * window = glfwCreateWindow(config.width, config.height, "Ion Simulator", NULL, NULL);
 
 	if(!window){
 		return -1;
 	}
 
 	glfwMakeContextCurrent(window);
-	glOrtho(0, WIDTH, 0, HEIGHT, -1.0, 1.0);
+	glOrtho(0, config.width, 0, config.height, -1.0, 1.0);
 
-	vector<particle> cpu_particles = load_particles(argv[1]);
+	vector<particle> cpu_particles = load_particles(config.particles_file);
 	number_particles = cpu_particles.size();
-
-	cout << "A\n";
 
 	blocks = number_particles / BLOCK_SIZE;
 	if(number_particles % BLOCK_SIZE != 0){
@@ -117,8 +109,6 @@ int main(int argc, char* argv[]){
 
 	int particle_data_size = number_particles * sizeof(particle);
 
-	cout << "A\n";
-	
 	particle * gpu_particles = NULL;
 	cudaError_t error = cudaMalloc(&gpu_particles, particle_data_size);
 	if(error != cudaSuccess){
@@ -129,20 +119,26 @@ int main(int argc, char* argv[]){
 		cout << cudaGetErrorString(error) << "\n";
 	}
 
-	cout << "A\n";
+	simulation_config * gpu_config = NULL;
+	error = cudaMalloc(&gpu_config, sizeof(simulation_config));
+	if(error != cudaSuccess){
+		cout << cudaGetErrorString(error) << "\n";
+	}
+	error = cudaMemcpy(gpu_config, &config, sizeof(simulation_config), cudaMemcpyHostToDevice);
+	if(error != cudaSuccess){
+		cout << cudaGetErrorString(error) << "\n";
+	}
 
 	int tick_count = 0;
-	for(double t = 0.0; t < TOTAL_TIME; t += DT){
-		timespec start;
-		clock_gettime(CLOCK_REALTIME, &start);
-		move_particles<<<blocks, BLOCK_SIZE>>>(gpu_particles);
+	for(double t = 0.0; t < config.total_time; t += config.dt){
+		move_particles<<<blocks, BLOCK_SIZE>>>(gpu_particles, gpu_config);
 
 		error = cudaMemcpy(&cpu_particles.front(), gpu_particles, particle_data_size, cudaMemcpyDeviceToHost);
 		if(error != cudaSuccess){
 			cout << cudaGetErrorString(error) << "\n";
 		}
 
-		if(tick_count % TICKS_PER_DISPLAY == 0){
+		if(tick_count % config.ticks_per_display == 0){
 			glClear(GL_COLOR_BUFFER_BIT);
 			glBegin(GL_POINTS);
 			glColor3f(0.0f, 1.0f, 0.0f);
@@ -151,14 +147,13 @@ int main(int argc, char* argv[]){
 			}
 			glEnd();
 			glfwSwapBuffers(window);
-			timespec end;
-			clock_gettime(CLOCK_REALTIME, &end);
 			cout << t << "\n";
 		}
 		tick_count++;
 	}
 
 	cudaFree(gpu_particles);
+	cudaFree(gpu_config);
 		
 	return 0;
 }
