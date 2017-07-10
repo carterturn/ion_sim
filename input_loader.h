@@ -14,6 +14,7 @@ struct simulation_config {
 		double dt;
 		int ticks_per_display;
 		std::string particles_file;
+		int number_particles;
 };
 
 simulation_config load_config(std::string filename);

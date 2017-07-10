@@ -18,8 +18,6 @@ using namespace std;
 
 int blocks;
 
-__managed__ int number_particles;
-
 __device__ __host__ bool is_zero(double value){
 	return abs(value) < EPSILON;
 }
@@ -31,7 +29,7 @@ __device__ __host__ double sign(double value){
 __global__ void move_particles(particle * particles, simulation_config * config){
 	int i = (blockIdx.x * BLOCK_SIZE) + threadIdx.x;
 
-	if(i > number_particles) return;
+	if(i > config->number_particles) return;
 	
 	particles[i].x += particles[i].vx * config->dt / config->meters_per_square;
 	if(particles[i].x > config->width){
@@ -52,7 +50,7 @@ __global__ void move_particles(particle * particles, simulation_config * config)
 		particles[i].vy = -particles[i].vy * config->wall_elasticity;
 	}
 
-	for(int j = 0; j < number_particles; j++){
+	for(int j = 0; j < config->number_particles; j++){
 		if(i != j){
 			double d_x = (particles[i].x - particles[j].x) * config->meters_per_square;
 			double d_y = (particles[i].y - particles[j].y) * config->meters_per_square;
@@ -100,14 +98,14 @@ int main(int argc, char* argv[]){
 	glOrtho(0, config.width, 0, config.height, -1.0, 1.0);
 
 	vector<particle> cpu_particles = load_particles(config.particles_file);
-	number_particles = cpu_particles.size();
+	config.number_particles = cpu_particles.size();
 
-	blocks = number_particles / BLOCK_SIZE;
-	if(number_particles % BLOCK_SIZE != 0){
+	blocks = config.number_particles / BLOCK_SIZE;
+	if(config.number_particles % BLOCK_SIZE != 0){
 		blocks++;
 	}
 
-	int particle_data_size = number_particles * sizeof(particle);
+	int particle_data_size = config.number_particles * sizeof(particle);
 
 	particle * gpu_particles = NULL;
 	cudaError_t error = cudaMalloc(&gpu_particles, particle_data_size);
@@ -142,7 +140,7 @@ int main(int argc, char* argv[]){
 			glClear(GL_COLOR_BUFFER_BIT);
 			glBegin(GL_POINTS);
 			glColor3f(0.0f, 1.0f, 0.0f);
-			for(int i = 0; i < number_particles; i++){
+			for(int i = 0; i < config.number_particles; i++){
 				glVertex2i((int) cpu_particles[i].x, (int) cpu_particles[i].y);
 			}
 			glEnd();
