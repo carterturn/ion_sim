@@ -176,8 +176,6 @@ int main(int argc, char* argv[]){
 	if(force_matrix_size % BLOCK_SIZE != 0){
 		force_blocks++;
 	}
-	double * cpu_forces_x = new double[force_matrix_size];
-	double * cpu_forces_y = new double[force_matrix_size];
 
 	pair_index * force_indicies = NULL;
 	error = cudaMalloc(&force_indicies, force_matrix_size * sizeof(pair_index));
@@ -240,8 +238,6 @@ int main(int argc, char* argv[]){
 	cudaFree(forces_y);
 	cudaFree(gpu_particles);
 	cudaFree(gpu_config);
-	delete[] cpu_forces_x;
-	delete[] cpu_forces_y;
-		
+
 	return 0;
 }
