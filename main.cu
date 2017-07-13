@@ -16,6 +16,11 @@ using namespace std;
 
 #define EPSILON 0.000001;
 
+struct pair_index{
+	int i;
+	int j;
+};
+
 __device__ __host__ bool is_zero(double value){
 	return abs(value) < EPSILON;
 }
@@ -24,28 +29,21 @@ __device__ __host__ double sign(double value){
 	return value >= 0 ? 1.0 : -1.0;
 }
 
+__device__ __host__ double half_abs(double value){
+	return value >= 0 ? value : 0.0;
+}
+
 __global__ void calculate_force_matrix(particle * particles, double * forces_x, double * forces_y,
-				       simulation_config * config){
+				       simulation_config * config, pair_index * force_indicies){
 	int ind = (blockIdx.x * BLOCK_SIZE) + threadIdx.x;
 
-	int n = config->number_particles * (config->number_particles - 1) / 2;
-	if(ind >= n){
+	if(ind >= config->number_particles * (config->number_particles - 1) / 2){
 		return;
 	}
 
-	// index parser (needs optimization)
-	int i = 0;
-	int j = 0;
-	int step = config->number_particles - 1;
-	for(int x = 0; x < n; step--){
-		x += step;
-		if(ind < x){
-			j = ind - x + step + i + 1;
-			break;
-		}
-		i++;
-	}
-
+	int i = force_indicies[ind].i;
+	int j = force_indicies[ind].j;
+	
 	double d_x = (particles[i].x - particles[j].x) * config->meters_per_square;
 	double d_y = (particles[i].y - particles[j].y) * config->meters_per_square;
 	double F = (K * particles[i].q * particles[j].q) /
@@ -178,16 +176,42 @@ int main(int argc, char* argv[]){
 	if(force_matrix_size % BLOCK_SIZE != 0){
 		force_blocks++;
 	}
-
 	double * cpu_forces_x = new double[force_matrix_size];
 	double * cpu_forces_y = new double[force_matrix_size];
+
+	pair_index * force_indicies = NULL;
+	error = cudaMalloc(&force_indicies, force_matrix_size * sizeof(pair_index));
+	if(error != cudaSuccess){
+		cout << cudaGetErrorString(error) << "\n";
+	}
+	pair_index * cpu_force_indicies = new pair_index[force_matrix_size];
+
+	for(int i = 0; i < force_matrix_size; i++){
+		cpu_force_indicies[i].i = 0;
+		int step = config.number_particles - 1;
+		for(int j = 0; j < force_matrix_size; step--){
+			j += step;
+			if(i < j){
+				cpu_force_indicies[i].j = i - j + step + cpu_force_indicies[i].i + 1;
+				break;
+			}
+			cpu_force_indicies[i].i++;
+		}
+	}
+	
+	error = cudaMemcpy(force_indicies, cpu_force_indicies, force_matrix_size * sizeof(pair_index),
+			   cudaMemcpyHostToDevice);
+	if(error != cudaSuccess){
+		cout << cudaGetErrorString(error) << "\n";
+	}
 
 	int tick_count = 0;
 	for(double t = 0.0; t < config.total_time; t += config.dt){
 		cudaMemset(forces_x, 0, force_matrix_memory);
 		cudaMemset(forces_y, 0, force_matrix_memory);
 		
-		calculate_force_matrix<<<force_blocks, BLOCK_SIZE>>>(gpu_particles, forces_x, forces_y, gpu_config);
+		calculate_force_matrix<<<force_blocks, BLOCK_SIZE>>>(gpu_particles, forces_x, forces_y, gpu_config,
+			force_indicies);
 		
 		move_particles<<<move_blocks, BLOCK_SIZE>>>(gpu_particles, forces_x, forces_y, gpu_config);
 
