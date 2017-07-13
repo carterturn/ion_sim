@@ -197,15 +197,6 @@ int main(int argc, char* argv[]){
 			cout << cudaGetErrorString(error) << "\n";
 		}
 
-		error = cudaMemcpy(cpu_forces_x, forces_x, force_matrix_memory, cudaMemcpyDeviceToHost);
-		if(error != cudaSuccess){
-			cout << cudaGetErrorString(error) << "\n";
-		}
-		error = cudaMemcpy(cpu_forces_y, forces_y, force_matrix_memory, cudaMemcpyDeviceToHost);
-		if(error != cudaSuccess){
-			cout << cudaGetErrorString(error) << "\n";
-		}
-
 		if(tick_count % config.ticks_per_display == 0){
 		
 			glClear(GL_COLOR_BUFFER_BIT);
