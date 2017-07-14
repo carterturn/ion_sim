@@ -16,11 +16,6 @@ using namespace std;
 
 #define EPSILON 0.000001;
 
-struct pair_index{
-	int i;
-	int j;
-};
-
 __device__ __host__ bool is_zero(double value){
 	return abs(value) < EPSILON;
 }
@@ -34,38 +29,36 @@ __device__ __host__ double half_abs(double value){
 }
 
 __global__ void calculate_force_matrix(particle * particles, double * forces_x, double * forces_y,
-				       simulation_config * config, pair_index * force_indicies){
+				       simulation_config * config){
 	int ind = (blockIdx.x * BLOCK_SIZE) + threadIdx.x;
 
-	if(ind >= config->number_particles * (config->number_particles - 1) / 2){
+	if(ind >= config->number_particles * (config->number_particles + 1) / 2){
 		return;
 	}
 
-	int i = force_indicies[ind].i;
-	int j = force_indicies[ind].j;
-	
+	int i = ind / config->number_particles;
+	int j = ind - i * config->number_particles;
+
+	if(j < i){
+		ind = config->number_particles * config->number_particles - ind + config->number_particles - 1;
+		i = config->number_particles - i;
+		j = config->number_particles - j - 1;
+	}
+
 	double d_x = (particles[i].x - particles[j].x) * config->meters_per_square;
 	double d_y = (particles[i].y - particles[j].y) * config->meters_per_square;
 	double F = (K * particles[i].q * particles[j].q) /
 		(d_x*d_x + d_y*d_y);
 	double F_y;
 	double F_x;
-	if(is_zero(d_y)){
-		F_x = F * sign(d_x);
-		F_y = 0.0;
-	}
-	else if(is_zero(d_x)){
-		F_y = F * sign(d_y);
-		F_x = 0.0;
-	}
-	else{
-		double hyp = sqrt(d_x*d_x + d_y*d_y);
-		F_y = F * d_y / hyp;
-		F_x = F * d_x / hyp;
-	}
+	double hyp = sqrt(d_x*d_x + d_y*d_y);
+	F_y = is_zero(d_y) ? 0.0 : F * d_y / hyp;
+	F_x = is_zero(d_x) ? 0.0 : F * d_x / hyp;
 
 	forces_x[ind] = F_x;
 	forces_y[ind] = F_y;
+	forces_x[j * config->number_particles + i] = -1.0 * F_x;
+	forces_y[j * config->number_particles + i] = -1.0 * F_y;
 }
 
 __global__ void move_particles(particle * particles, double * forces_x, double * forces_y,
@@ -162,7 +155,7 @@ int main(int argc, char* argv[]){
 
 	double * forces_x = NULL;
 	double * forces_y = NULL;
-	int force_matrix_size = config.number_particles * (config.number_particles - 1) / 2;
+	int force_matrix_size = config.number_particles * config.number_particles;
 	int force_matrix_memory = force_matrix_size * sizeof(double);
 	error = cudaMalloc(&forces_x, force_matrix_memory);
 	if(error != cudaSuccess){
