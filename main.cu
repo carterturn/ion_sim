@@ -160,9 +160,6 @@ int main(int argc, char* argv[]){
 		force_blocks++;
 	}
 
-	double * cpu_forces_x = new double[force_matrix_size];
-	double * cpu_forces_y = new double[force_matrix_size];
-
 	cublasStatus_t blas_status;
         cublasHandle_t blas_handle;
 	blas_status = cublasCreate(&blas_handle);
@@ -192,6 +189,7 @@ int main(int argc, char* argv[]){
 	if(error != cudaSuccess){
 		cout << cudaGetErrorString(error) << "\n";
 	}
+	delete[] cpu_forces_ones;
 	
 	int tick_count = 0;
 	for(double t = 0.0; t < config.total_time; t += config.dt){
@@ -218,15 +216,6 @@ int main(int argc, char* argv[]){
 			cout << cudaGetErrorString(error) << "\n";
 		}
 
-		error = cudaMemcpy(cpu_forces_x, total_forces_x, total_force_matrix_memory, cudaMemcpyDeviceToHost);
-		if(error != cudaSuccess){
-			cout << cudaGetErrorString(error) << "\n";
-		}
-		error = cudaMemcpy(cpu_forces_y, total_forces_y, total_force_matrix_memory, cudaMemcpyDeviceToHost);
-		if(error != cudaSuccess){
-			cout << cudaGetErrorString(error) << "\n";
-		}
-
 		if(tick_count % config.ticks_per_display == 0){
 		
 			glClear(GL_COLOR_BUFFER_BIT);
@@ -237,20 +226,6 @@ int main(int argc, char* argv[]){
 			}
 			glEnd();
 			glfwSwapBuffers(window);
-			for(int i = 0; i < config.number_particles; i++){
-				cout << cpu_forces_x[i] << "\t";
-				if(((i+1) % config.number_particles) == 0){
-					cout << "\n";
-				}
-			}
-			cout << "\n";
-			for(int i = 0; i < config.number_particles; i++){
-				cout << cpu_forces_y[i] << "\t";
-				if(((i+1) % config.number_particles) == 0){
-					cout << "\n";
-				}
-			}
-			cout << "\n";
 			cout << t << "\n";
 		}
 		tick_count++;
@@ -261,9 +236,6 @@ int main(int argc, char* argv[]){
 	cudaFree(forces_ones);
 	cudaFree(gpu_particles);
 	cudaFree(gpu_config);
-	delete[] cpu_forces_x;
-	delete[] cpu_forces_y;
-	delete[] cpu_forces_ones;
 
 	cublasDestroy(blas_handle);
 
