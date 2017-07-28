@@ -4,8 +4,10 @@
 #include <cstring>
 #include <unistd.h>
 
+#ifdef GRAPHICS
 #include <GLFW/glfw3.h>
 #include <GL/gl.h>
+#endif
 
 #include <cublas_v2.h>
 
@@ -103,6 +105,7 @@ int main(int argc, char* argv[]){
 
 	simulation_config config = load_config(argv[1]);
 
+#ifdef GRAPHICS
 	glfwInit();
 	GLFWwindow * window = glfwCreateWindow(config.width, config.height, "Ion Simulator", NULL, NULL);
 
@@ -112,6 +115,7 @@ int main(int argc, char* argv[]){
 
 	glfwMakeContextCurrent(window);
 	glOrtho(0, config.width, 0, config.height, -1.0, 1.0);
+#endif
 
 	vector<particle> cpu_particles = load_particles(config.particles_file);
 	config.number_particles = cpu_particles.size();
@@ -160,9 +164,8 @@ int main(int argc, char* argv[]){
 		force_blocks++;
 	}
 
-	cublasStatus_t blas_status;
         cublasHandle_t blas_handle;
-	blas_status = cublasCreate(&blas_handle);
+	cublasCreate(&blas_handle);
 
 	double * total_forces_x = NULL;
 	double * total_forces_y = NULL;
@@ -193,31 +196,26 @@ int main(int argc, char* argv[]){
 	
 	int tick_count = 0;
 	for(double t = 0.0; t < config.total_time; t += config.dt){
-		cudaMemset(forces_x, 0, force_matrix_memory);
-		cudaMemset(forces_y, 0, force_matrix_memory);
-		
 		calculate_force_matrix<<<force_blocks, BLOCK_SIZE>>>(gpu_particles, forces_x, forces_y, gpu_config);
 
 		double alpha = 1.0;
 		double beta = 0.0;
-		blas_status = cublasDgemv(blas_handle, CUBLAS_OP_T, config.number_particles, config.number_particles,
-					  &alpha, forces_x, config.number_particles, forces_ones, 1, &beta,
-					  total_forces_x, 1);
-		blas_status = cublasDgemv(blas_handle, CUBLAS_OP_T, config.number_particles, config.number_particles,
-					  &alpha, forces_y, config.number_particles, forces_ones, 1, &beta,
-					  total_forces_y, 1);
+		cublasDgemv(blas_handle, CUBLAS_OP_T, config.number_particles, config.number_particles, &alpha,
+			    forces_x, config.number_particles, forces_ones, 1, &beta, total_forces_x, 1);
+		cublasDgemv(blas_handle, CUBLAS_OP_T, config.number_particles, config.number_particles, &alpha,
+			    forces_y, config.number_particles, forces_ones, 1, &beta, total_forces_y, 1);
 		
 		move_particles<<<move_blocks, BLOCK_SIZE>>>(gpu_particles, total_forces_x, total_forces_y,
 							    gpu_config);
 
-		error = cudaMemcpy(&cpu_particles.front(), gpu_particles,
-				   particle_data_size, cudaMemcpyDeviceToHost);
-		if(error != cudaSuccess){
-			cout << cudaGetErrorString(error) << "\n";
-		}
-
 		if(tick_count % config.ticks_per_display == 0){
-		
+			error = cudaMemcpy(&cpu_particles.front(), gpu_particles,
+					   particle_data_size, cudaMemcpyDeviceToHost);
+			if(error != cudaSuccess){
+				cout << cudaGetErrorString(error) << "\n";
+			}
+
+#ifdef GRAPHICS
 			glClear(GL_COLOR_BUFFER_BIT);
 			glBegin(GL_POINTS);
 			glColor3f(0.0f, 1.0f, 0.0f);
@@ -226,7 +224,7 @@ int main(int argc, char* argv[]){
 			}
 			glEnd();
 			glfwSwapBuffers(window);
-			cout << t << "\n";
+#endif
 		}
 		tick_count++;
 	}
