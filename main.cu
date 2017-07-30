@@ -1,3 +1,5 @@
+#define GRAPHICS
+
 #include <iostream>
 #include <sys/time.h>
 #include <cmath>
@@ -16,8 +18,6 @@
 
 using namespace std;
 
-#define BLOCK_SIZE 32
-
 #define EPSILON 0.000001;
 
 __device__ __host__ bool is_zero(double value){
@@ -34,7 +34,7 @@ __device__ __host__ double half_abs(double value){
 
 __global__ void calculate_force_matrix(particle * particles, double * forces_x, double * forces_y,
 				       simulation_config * config){
-	int ind = (blockIdx.x * BLOCK_SIZE) + threadIdx.x;
+	int ind = (blockIdx.x * blockDim.x) + threadIdx.x;
 
 	if(ind >= config->number_particles * (config->number_particles + 1) / 2){
 		return;
@@ -51,13 +51,10 @@ __global__ void calculate_force_matrix(particle * particles, double * forces_x, 
 
 	double d_x = (particles[i].x - particles[j].x) * config->meters_per_square;
 	double d_y = (particles[i].y - particles[j].y) * config->meters_per_square;
-	double F = (K * particles[i].q * particles[j].q) /
-		(d_x*d_x + d_y*d_y);
-	double F_y;
-	double F_x;
+	double F = (K * particles[i].q * particles[j].q) / (d_x*d_x + d_y*d_y);
 	double hyp = sqrt(d_x*d_x + d_y*d_y);
-	F_y = is_zero(d_y) ? 0.0 : F * d_y / hyp;
-	F_x = is_zero(d_x) ? 0.0 : F * d_x / hyp;
+	double F_y = is_zero(d_y) ? 0.0 : F * d_y / hyp;
+	double F_x = is_zero(d_x) ? 0.0 : F * d_x / hyp;
 
 	forces_x[ind] = F_x;
 	forces_y[ind] = F_y;
@@ -67,14 +64,14 @@ __global__ void calculate_force_matrix(particle * particles, double * forces_x, 
 
 __global__ void move_particles(particle * particles, double * forces_x, double * forces_y,
 			       simulation_config * config){
-	int i = (blockIdx.x * BLOCK_SIZE) + threadIdx.x;
+	int i = (blockIdx.x * blockDim.x) + threadIdx.x;
 
 	if(i >= config->number_particles){
 		return;
 	}
 
-	particles[i].vx = forces_x[i] * config->dt / particles[i].m;
-	particles[i].vy = forces_y[i] * config->dt / particles[i].m;
+	particles[i].vx += forces_x[i] * config->dt / particles[i].m;
+	particles[i].vy += forces_y[i] * config->dt / particles[i].m;
 
 	particles[i].x += particles[i].vx * config->dt / config->meters_per_square;
 	if(particles[i].x > config->width){
@@ -93,6 +90,32 @@ __global__ void move_particles(particle * particles, double * forces_x, double *
 	if(particles[i].y < 0){
 		particles[i].y = 0;
 		particles[i].vy = -particles[i].vy * config->wall_elasticity;
+	}
+}
+
+void check_error(cudaError_t error, int line){
+	if(error != cudaSuccess){
+		cerr << "Error on line " << line << "\n\t" << cudaGetErrorString(error) << "\n";
+	}
+}
+
+string cublasGetErrorString(cublasStatus_t status){
+	switch(status){
+        case CUBLAS_STATUS_SUCCESS: return "CUBLAS_STATUS_SUCCESS";
+        case CUBLAS_STATUS_NOT_INITIALIZED: return "CUBLAS_STATUS_NOT_INITIALIZED";
+        case CUBLAS_STATUS_ALLOC_FAILED: return "CUBLAS_STATUS_ALLOC_FAILED";
+        case CUBLAS_STATUS_INVALID_VALUE: return "CUBLAS_STATUS_INVALID_VALUE"; 
+        case CUBLAS_STATUS_ARCH_MISMATCH: return "CUBLAS_STATUS_ARCH_MISMATCH"; 
+        case CUBLAS_STATUS_MAPPING_ERROR: return "CUBLAS_STATUS_MAPPING_ERROR";
+        case CUBLAS_STATUS_EXECUTION_FAILED: return "CUBLAS_STATUS_EXECUTION_FAILED"; 
+        case CUBLAS_STATUS_INTERNAL_ERROR: return "CUBLAS_STATUS_INTERNAL_ERROR";
+	default: return "unknown error";
+	}
+}
+
+void check_error(cublasStatus_t status, int line){
+	if(status != CUBLAS_STATUS_SUCCESS){
+		cerr << "Error on line " << line << "\n\t" << cublasGetErrorString(status) << "\n";
 	}
 }
 
@@ -120,49 +143,26 @@ int main(int argc, char* argv[]){
 	vector<particle> cpu_particles = load_particles(config.particles_file);
 	config.number_particles = cpu_particles.size();
 
-	int move_blocks = config.number_particles / BLOCK_SIZE;
-	if(config.number_particles % BLOCK_SIZE != 0){
-		move_blocks++;
-	}
+	int move_blocks = config.number_particles / BLOCK_SIZE + 1;
 
 	int particle_data_size = config.number_particles * sizeof(particle);
 
 	particle * gpu_particles = NULL;
-	cudaError_t error = cudaMalloc(&gpu_particles, particle_data_size);
-	if(error != cudaSuccess){
-		cout << cudaGetErrorString(error) << "\n";
-	}
-	error = cudaMemcpy(gpu_particles, &cpu_particles.front(), particle_data_size, cudaMemcpyHostToDevice);
-	if(error != cudaSuccess){
-		cout << cudaGetErrorString(error) << "\n";
-	}
+	check_error(cudaMalloc(&gpu_particles, particle_data_size), __LINE__);
+	check_error(cudaMemcpy(gpu_particles, &cpu_particles.front(), particle_data_size, cudaMemcpyHostToDevice),
+		    __LINE__);
 
 	simulation_config * gpu_config = NULL;
-	error = cudaMalloc(&gpu_config, sizeof(simulation_config));
-	if(error != cudaSuccess){
-		cout << cudaGetErrorString(error) << "\n";
-	}
-	error = cudaMemcpy(gpu_config, &config, sizeof(simulation_config), cudaMemcpyHostToDevice);
-	if(error != cudaSuccess){
-		cout << cudaGetErrorString(error) << "\n";
-	}
+	check_error(cudaMalloc(&gpu_config, sizeof(simulation_config)), __LINE__);
+	check_error(cudaMemcpy(gpu_config, &config, sizeof(simulation_config), cudaMemcpyHostToDevice), __LINE__);
 
 	double * forces_x = NULL;
 	double * forces_y = NULL;
 	int force_matrix_size = config.number_particles * config.number_particles;
 	int force_matrix_memory = force_matrix_size * sizeof(double);
-	error = cudaMalloc(&forces_x, force_matrix_memory);
-	if(error != cudaSuccess){
-		cout << cudaGetErrorString(error) << "\n";
-	}
-	error = cudaMalloc(&forces_y, force_matrix_memory);
-	if(error != cudaSuccess){
-		cout << cudaGetErrorString(error) << "\n";
-	}
-	int force_blocks = config.number_particles * (config.number_particles + 1) / (2 * BLOCK_SIZE);
-	if((config.number_particles * (config.number_particles + 1) / 2) % BLOCK_SIZE != 0){
-		force_blocks++;
-	}
+	check_error(cudaMalloc(&forces_x, force_matrix_memory), __LINE__);
+	check_error(cudaMalloc(&forces_y, force_matrix_memory), __LINE__);
+	int force_blocks = config.number_particles * (config.number_particles + 1) / (2 * BLOCK_SIZE) + 1;
 
         cublasHandle_t blas_handle;
 	cublasCreate(&blas_handle);
@@ -170,52 +170,59 @@ int main(int argc, char* argv[]){
 	double * total_forces_x = NULL;
 	double * total_forces_y = NULL;
 	int total_force_matrix_memory = config.number_particles * sizeof(double);
-	error = cudaMalloc(&total_forces_x, total_force_matrix_memory);
-	if(error != cudaSuccess){
-		cout << cudaGetErrorString(error) << "\n";
-	}
-	error = cudaMalloc(&total_forces_y, total_force_matrix_memory);
-	if(error != cudaSuccess){
-		cout << cudaGetErrorString(error) << "\n";
-	}
+	check_error(cudaMalloc(&total_forces_x, total_force_matrix_memory), __LINE__);
+	check_error(cudaMalloc(&total_forces_y, total_force_matrix_memory), __LINE__);
 
 	double * forces_ones = NULL;
-	error = cudaMalloc(&forces_ones, total_force_matrix_memory);
-	if(error != cudaSuccess){
-		cout << cudaGetErrorString(error) << "\n";
-	}
+	check_error(cudaMalloc(&forces_ones, total_force_matrix_memory), __LINE__);
 	double * cpu_forces_ones = new double[config.number_particles];
 	for(int i = 0; i < config.number_particles; i++){
 		cpu_forces_ones[i] = 1.0;
 	}
-	error = cudaMemcpy(forces_ones, cpu_forces_ones, total_force_matrix_memory, cudaMemcpyHostToDevice);
-	if(error != cudaSuccess){
-		cout << cudaGetErrorString(error) << "\n";
-	}
+	check_error(cudaMemcpy(forces_ones, cpu_forces_ones, total_force_matrix_memory, cudaMemcpyHostToDevice),
+		    __LINE__);
 	delete[] cpu_forces_ones;
-	
-	int tick_count = 0;
-	for(double t = 0.0; t < config.total_time; t += config.dt){
-		calculate_force_matrix<<<force_blocks, BLOCK_SIZE>>>(gpu_particles, forces_x, forces_y, gpu_config);
 
-		double alpha = 1.0;
-		double beta = 0.0;
-		cublasDgemv(blas_handle, CUBLAS_OP_T, config.number_particles, config.number_particles, &alpha,
-			    forces_x, config.number_particles, forces_ones, 1, &beta, total_forces_x, 1);
-		cublasDgemv(blas_handle, CUBLAS_OP_T, config.number_particles, config.number_particles, &alpha,
-			    forces_y, config.number_particles, forces_ones, 1, &beta, total_forces_y, 1);
+#ifdef GRAPHICS
+	int tick_count = 0;
+#endif
+	double alpha = 1.0;
+	double beta = 0.0;
+	for(double t = 0.0; t < config.total_time; t += config.dt){
+
+		// Start stage 1: calculate force matrix
+		calculate_force_matrix<<<force_blocks, BLOCK_SIZE>>>(gpu_particles, forces_x, forces_y, gpu_config);
+		check_error(cudaGetLastError(), __LINE__);
 		
+		check_error(cudaThreadSynchronize(), __LINE__);
+		// Synchronize as we end stage 1
+
+		// Start stage 2: sum across rows of force matrix
+		check_error(cublasDgemv(blas_handle, CUBLAS_OP_T, config.number_particles, config.number_particles,
+					&alpha, forces_x, config.number_particles, forces_ones, 1, &beta,
+					total_forces_x, 1), __LINE__);
+		check_error(cudaGetLastError(), __LINE__);
+		check_error(cublasDgemv(blas_handle, CUBLAS_OP_T, config.number_particles, config.number_particles,
+					&alpha, forces_y, config.number_particles, forces_ones, 1, &beta,
+					total_forces_y, 1), __LINE__);
+		check_error(cudaGetLastError(), __LINE__);
+		
+		check_error(cudaThreadSynchronize(), __LINE__);
+		// Synchronize as we end stage 2
+
+		// Start stage 3: update particles from forces
 		move_particles<<<move_blocks, BLOCK_SIZE>>>(gpu_particles, total_forces_x, total_forces_y,
 							    gpu_config);
 
-		if(tick_count % config.ticks_per_display == 0){
-			error = cudaMemcpy(&cpu_particles.front(), gpu_particles,
-					   particle_data_size, cudaMemcpyDeviceToHost);
-			if(error != cudaSuccess){
-				cout << cudaGetErrorString(error) << "\n";
-			}
+		check_error(cudaGetLastError(), __LINE__);
+		check_error(cudaThreadSynchronize(), __LINE__);
+		// Synchronize as we end stage 3
 
 #ifdef GRAPHICS
+		if(tick_count % config.ticks_per_display == 0){
+			check_error(cudaMemcpy(&cpu_particles.front(), gpu_particles,
+					       particle_data_size, cudaMemcpyDeviceToHost), __LINE__);
+
 			glClear(GL_COLOR_BUFFER_BIT);
 			glBegin(GL_POINTS);
 			glColor3f(0.0f, 1.0f, 0.0f);
@@ -224,9 +231,10 @@ int main(int argc, char* argv[]){
 			}
 			glEnd();
 			glfwSwapBuffers(window);
-#endif
+			cout << t << "\n";
 		}
 		tick_count++;
+#endif
 	}
 
 	cudaFree(forces_x);
