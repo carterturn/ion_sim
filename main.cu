@@ -101,15 +101,24 @@ void check_error(cudaError_t error, int line){
 
 string cublasGetErrorString(cublasStatus_t status){
 	switch(status){
-        case CUBLAS_STATUS_SUCCESS: return "CUBLAS_STATUS_SUCCESS";
-        case CUBLAS_STATUS_NOT_INITIALIZED: return "CUBLAS_STATUS_NOT_INITIALIZED";
-        case CUBLAS_STATUS_ALLOC_FAILED: return "CUBLAS_STATUS_ALLOC_FAILED";
-        case CUBLAS_STATUS_INVALID_VALUE: return "CUBLAS_STATUS_INVALID_VALUE"; 
-        case CUBLAS_STATUS_ARCH_MISMATCH: return "CUBLAS_STATUS_ARCH_MISMATCH"; 
-        case CUBLAS_STATUS_MAPPING_ERROR: return "CUBLAS_STATUS_MAPPING_ERROR";
-        case CUBLAS_STATUS_EXECUTION_FAILED: return "CUBLAS_STATUS_EXECUTION_FAILED"; 
-        case CUBLAS_STATUS_INTERNAL_ERROR: return "CUBLAS_STATUS_INTERNAL_ERROR";
-	default: return "unknown error";
+        case CUBLAS_STATUS_SUCCESS:
+		return "CUBLAS_STATUS_SUCCESS";
+        case CUBLAS_STATUS_NOT_INITIALIZED:
+		return "CUBLAS_STATUS_NOT_INITIALIZED";
+        case CUBLAS_STATUS_ALLOC_FAILED:
+		return "CUBLAS_STATUS_ALLOC_FAILED";
+        case CUBLAS_STATUS_INVALID_VALUE:
+		return "CUBLAS_STATUS_INVALID_VALUE"; 
+        case CUBLAS_STATUS_ARCH_MISMATCH:
+		return "CUBLAS_STATUS_ARCH_MISMATCH"; 
+        case CUBLAS_STATUS_MAPPING_ERROR:
+		return "CUBLAS_STATUS_MAPPING_ERROR";
+        case CUBLAS_STATUS_EXECUTION_FAILED:
+		return "CUBLAS_STATUS_EXECUTION_FAILED"; 
+        case CUBLAS_STATUS_INTERNAL_ERROR:
+		return "CUBLAS_STATUS_INTERNAL_ERROR";
+	default:
+		return "unknown error";
 	}
 }
 
@@ -140,10 +149,21 @@ int main(int argc, char* argv[]){
 	glOrtho(0, config.width, 0, config.height, -1.0, 1.0);
 #endif
 
+	cudaDeviceProp props;
+	check_error(cudaGetDeviceProperties(&props, 0), __LINE__);
+
 	vector<particle> cpu_particles = load_particles(config.particles_file);
 	config.number_particles = cpu_particles.size();
 
-	int move_blocks = config.number_particles / BLOCK_SIZE + 1;
+	int move_bsize = props.warpSize;
+	int move_blocks;
+	while(config.number_particles / move_bsize + 1 > props.maxGridSize[1]){
+		move_bsize *= 2;
+	}
+	if(move_bsize > 1024){
+		cerr << "Error: can not simulate " << config.number_particles << " on this platform\n";
+	}
+	move_blocks = config.number_particles / move_bsize + 1;
 
 	int particle_data_size = config.number_particles * sizeof(particle);
 
@@ -162,7 +182,20 @@ int main(int argc, char* argv[]){
 	int force_matrix_memory = force_matrix_size * sizeof(double);
 	check_error(cudaMalloc(&forces_x, force_matrix_memory), __LINE__);
 	check_error(cudaMalloc(&forces_y, force_matrix_memory), __LINE__);
-	int force_blocks = config.number_particles * (config.number_particles + 1) / (2 * BLOCK_SIZE) + 1;
+
+	int force_bsize;
+	int force_blocks;
+	{
+		force_bsize = props.warpSize;
+		int force_threads = config.number_particles * (config.number_particles + 1) / 2;
+		while(force_threads / force_bsize + 1 > props.maxGridSize[1]){
+			force_bsize *= 2;
+		}
+		force_blocks = force_threads / force_bsize + 1;
+	}
+
+	cout << "Using " << force_blocks << " blocks of size " << force_bsize << " to calculate force matrix\n";
+	cout << "Using " << move_blocks << " blocks of size " << move_bsize << " to move particles\n";
 
         cublasHandle_t blas_handle;
 	cublasCreate(&blas_handle);
@@ -191,7 +224,7 @@ int main(int argc, char* argv[]){
 	for(double t = 0.0; t < config.total_time; t += config.dt){
 
 		// Start stage 1: calculate force matrix
-		calculate_force_matrix<<<force_blocks, BLOCK_SIZE>>>(gpu_particles, forces_x, forces_y, gpu_config);
+		calculate_force_matrix<<<force_blocks, force_bsize>>>(gpu_particles, forces_x, forces_y, gpu_config);
 		check_error(cudaGetLastError(), __LINE__);
 		
 		check_error(cudaThreadSynchronize(), __LINE__);
@@ -211,7 +244,7 @@ int main(int argc, char* argv[]){
 		// Synchronize as we end stage 2
 
 		// Start stage 3: update particles from forces
-		move_particles<<<move_blocks, BLOCK_SIZE>>>(gpu_particles, total_forces_x, total_forces_y,
+		move_particles<<<move_blocks, move_bsize>>>(gpu_particles, total_forces_x, total_forces_y,
 							    gpu_config);
 
 		check_error(cudaGetLastError(), __LINE__);
