@@ -12,25 +12,14 @@
 #endif
 
 #include <cublas_v2.h>
+#include <cuda_profiler_api.h>
 
 #include "particle.h"
 #include "input_loader.h"
 
 using namespace std;
 
-#define EPSILON 0.000001;
-
-__device__ __host__ bool is_zero(double value){
-	return abs(value) < EPSILON;
-}
-
-__device__ __host__ double sign(double value){
-	return value >= 0 ? 1.0 : -1.0;
-}
-
-__device__ __host__ double half_abs(double value){
-	return value >= 0 ? value : 0.0;
-}
+#define EPSILON 0.000001
 
 __global__ void calculate_force_matrix(particle * particles, double * forces_x, double * forces_y,
 				       simulation_config * config){
@@ -53,8 +42,8 @@ __global__ void calculate_force_matrix(particle * particles, double * forces_x, 
 	double d_y = (particles[i].y - particles[j].y) * config->meters_per_square;
 	double F = (K * particles[i].q * particles[j].q) / (d_x*d_x + d_y*d_y);
 	double hyp = sqrt(d_x*d_x + d_y*d_y);
-	double F_y = is_zero(d_y) ? 0.0 : F * d_y / hyp;
-	double F_x = is_zero(d_x) ? 0.0 : F * d_x / hyp;
+	double F_y = (abs(d_y) > EPSILON) * (F * d_y / hyp);
+	double F_x = (abs(d_x) > EPSILON) * (F * d_x / hyp);
 
 	forces_x[ind] = F_x;
 	forces_y[ind] = F_y;
@@ -239,15 +228,15 @@ int main(int argc, char* argv[]){
 					&alpha, forces_y, config.number_particles, forces_ones, 1, &beta,
 					total_forces_y, 1), __LINE__);
 		check_error(cudaGetLastError(), __LINE__);
-		
+
 		check_error(cudaThreadSynchronize(), __LINE__);
 		// Synchronize as we end stage 2
 
 		// Start stage 3: update particles from forces
 		move_particles<<<move_blocks, move_bsize>>>(gpu_particles, total_forces_x, total_forces_y,
 							    gpu_config);
-
 		check_error(cudaGetLastError(), __LINE__);
+
 		check_error(cudaThreadSynchronize(), __LINE__);
 		// Synchronize as we end stage 3
 
@@ -277,6 +266,8 @@ int main(int argc, char* argv[]){
 	cudaFree(gpu_config);
 
 	cublasDestroy(blas_handle);
+
+	cudaProfilerStop();
 
 	return 0;
 }
