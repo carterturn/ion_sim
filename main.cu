@@ -12,7 +12,6 @@
 #endif
 
 #include <cublas_v2.h>
-#include <cuda_profiler_api.h>
 
 #include "particle.h"
 #include "input_loader.h"
@@ -266,8 +265,6 @@ int main(int argc, char* argv[]){
 	cudaFree(gpu_config);
 
 	cublasDestroy(blas_handle);
-
-	cudaProfilerStop();
 
 	return 0;
 }
