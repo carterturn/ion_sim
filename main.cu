@@ -46,8 +46,8 @@ __global__ void calculate_force_matrix(particle * particles, double * forces_x, 
 
 	forces_x[ind] = F_x;
 	forces_y[ind] = F_y;
-	forces_x[j * config->number_particles + i] = -1.0 * F_x;
-	forces_y[j * config->number_particles + i] = -1.0 * F_y;
+//	forces_x[j * config->number_particles + i] = -1.0 * F_x;
+//	forces_y[j * config->number_particles + i] = -1.0 * F_y;
 }
 
 __global__ void move_particles(particle * particles, double * forces_x, double * forces_y,
@@ -166,10 +166,14 @@ int main(int argc, char* argv[]){
 
 	double * forces_x = NULL;
 	double * forces_y = NULL;
+	double * forces_x_full = NULL;
+	double * forces_y_full = NULL;
 	int force_matrix_size = config.number_particles * config.number_particles;
 	int force_matrix_memory = force_matrix_size * sizeof(double);
 	check_error(cudaMalloc(&forces_x, force_matrix_memory), __LINE__);
 	check_error(cudaMalloc(&forces_y, force_matrix_memory), __LINE__);
+	check_error(cudaMalloc(&forces_x_full, force_matrix_memory), __LINE__);
+	check_error(cudaMalloc(&forces_y_full, force_matrix_memory), __LINE__);
 
 	int force_bsize;
 	int force_blocks;
@@ -207,24 +211,38 @@ int main(int argc, char* argv[]){
 #ifdef GRAPHICS
 	int tick_count = 0;
 #endif
-	double alpha = 1.0;
-	double beta = 0.0;
+	double n_one_d = -1.0;
+	double one_d = 1.0;
+	double zero_d = 0.0;
 	for(double t = 0.0; t < config.total_time; t += config.dt){
 
 		// Start stage 1: calculate force matrix
+		// Calculate the upper half of the force matrix
 		calculate_force_matrix<<<force_blocks, force_bsize>>>(gpu_particles, forces_x, forces_y, gpu_config);
 		check_error(cudaGetLastError(), __LINE__);
 		
+		check_error(cudaThreadSynchronize(), __LINE__);
+
+		// Merge the force matrix with itself
+		check_error(cublasDgeam(blas_handle, CUBLAS_OP_N, CUBLAS_OP_T, config.number_particles,
+					config.number_particles, &one_d, forces_x, config.number_particles,
+					&n_one_d, forces_x, config.number_particles, forces_x_full,
+					config.number_particles), __LINE__);
+		check_error(cublasDgeam(blas_handle, CUBLAS_OP_N, CUBLAS_OP_T, config.number_particles,
+					config.number_particles, &one_d, forces_y, config.number_particles,
+					&n_one_d, forces_y, config.number_particles, forces_y_full,
+					config.number_particles), __LINE__);
+
 		check_error(cudaThreadSynchronize(), __LINE__);
 		// Synchronize as we end stage 1
 
 		// Start stage 2: sum across rows of force matrix
 		check_error(cublasDgemv(blas_handle, CUBLAS_OP_T, config.number_particles, config.number_particles,
-					&alpha, forces_x, config.number_particles, forces_ones, 1, &beta,
+					&one_d, forces_x_full, config.number_particles, forces_ones, 1, &zero_d,
 					total_forces_x, 1), __LINE__);
 		check_error(cudaGetLastError(), __LINE__);
 		check_error(cublasDgemv(blas_handle, CUBLAS_OP_T, config.number_particles, config.number_particles,
-					&alpha, forces_y, config.number_particles, forces_ones, 1, &beta,
+					&one_d, forces_y_full, config.number_particles, forces_ones, 1, &zero_d,
 					total_forces_y, 1), __LINE__);
 		check_error(cudaGetLastError(), __LINE__);
 
